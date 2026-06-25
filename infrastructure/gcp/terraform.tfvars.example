@@ -1,0 +1,62 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Example variable values for the AI Datacenter GKE cluster
+# ──────────────────────────────────────────────────────────────────────────────
+# Copy this file to terraform.tfvars and fill in your project ID:
+#
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Then run:
+#   tofu init
+#   tofu plan
+#   tofu apply
+# ──────────────────────────────────────────────────────────────────────────────
+
+project_id   = "my-gcp-project-id" # ← replace with your GCP project ID
+region       = "europe-west4"
+zone         = "europe-west4-a"
+cluster_name = "ai-datacenter"
+
+# System pool — runs kube-system, monitoring, ingress, etc.
+system_pool = {
+  machine_type   = "e2-standard-4"
+  min_node_count = 1
+  max_node_count = 3
+  disk_size_gb   = 50
+}
+
+# Each entry creates a GPU node pool sized for a specific model.
+# Set enabled = false to remove a pool without deleting the config.
+models = {
+  gemma-4 = {
+    machine_type = "g2-standard-8" # 1×L4, 8 vCPU, 32 GiB
+    gpu_type     = "nvidia-l4"
+    gpu_count    = 1
+    min_nodes    = 0 # scale-to-zero when idle
+    max_nodes    = 2
+    spot         = true # ~70% cheaper, but can be preempted
+    disk_size_gb = 200
+  }
+
+  # ── Uncomment to add more models ──────────────────────────────────────────
+  #
+  # llama-4-scout = {
+  #   machine_type = "g2-standard-24" # 2×L4, 24 vCPU, 96 GiB
+  #   gpu_type     = "nvidia-l4"
+  #   gpu_count    = 2
+  #   min_nodes    = 0
+  #   max_nodes    = 3
+  #   spot         = true
+  #   disk_size_gb = 200
+  # }
+  #
+  # deepseek-r1 = {
+  #   enabled      = false           # disabled — too expensive for now
+  #   machine_type = "a2-highgpu-1g" # 1×A100 40GB, 12 vCPU, 85 GiB
+  #   gpu_type     = "nvidia-tesla-a100"
+  #   gpu_count    = 1
+  #   min_nodes    = 0
+  #   max_nodes    = 1
+  #   spot         = true
+  #   disk_size_gb = 300
+  # }
+}

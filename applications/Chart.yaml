@@ -1,0 +1,31 @@
+apiVersion: v2
+name: ai-datacenter
+description: AI inference platform — vLLM + LiteLLM + Open WebUI
+version: 0.1.0
+type: application
+
+dependencies:
+  # vLLM Production Stack (single install, multi-model via modelSpec)
+  - name: vllm-stack
+    repository: https://vllm-project.github.io/production-stack
+    version: ~0.1.11
+    condition: vllm-stack.enabled
+
+  # LiteLLM API Gateway
+  - name: litellm-helm
+    alias: litellm
+    repository: oci://ghcr.io/berriai
+    version: ">= 0.1.0"
+    condition: litellm.enabled
+
+  # Open WebUI Chat Portal
+  - name: open-webui
+    repository: https://helm.openwebui.com/
+    version: ">= 0.1.0"
+    condition: open-webui.enabled
+
+  # PostgreSQL (in-cluster, disabled when using external DB)
+  - name: postgresql
+    repository: oci://registry-1.docker.io/bitnamicharts
+    version: ~16.0
+    condition: postgresql.enabled

@@ -1,0 +1,25 @@
+{{/*
+  LiteLLM proxy configuration.
+  Generates a model_list that routes each enabled vLLM model through
+  the vLLM Production Stack router service.
+*/}}
+{{- if index .Values "litellm" "enabled" }}
+{{- $vllm := index .Values "vllm-stack" -}}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "ai-datacenter.fullname" . }}-litellm-config
+  labels:
+    {{- include "ai-datacenter.labels" . | nindent 4 }}
+data:
+  config.yaml: |
+    model_list:
+      {{- range $vllm.servingEngineSpec.modelSpec }}
+      {{- if ne (toString (.enabled | default true)) "false" }}
+      - model_name: {{ .name | quote }}
+        litellm_params:
+          model: "openai/{{ .modelURL }}"
+          api_base: "http://{{ $.Release.Name }}-vllm-stack-router:80/v1"
+      {{- end }}
+      {{- end }}
+{{- end }}
