@@ -1,0 +1,14 @@
+# ──────────────────────────────────────────────────────────────────────────────
+# Platform variables (all optional)
+# ──────────────────────────────────────────────────────────────────────────────
+#   cp terraform.tfvars.example terraform.tfvars
+#
+# Models are NOT configured here — edit ../models.yaml instead.
+# ──────────────────────────────────────────────────────────────────────────────
+
+# Avoids anonymous Hugging Face rate limits on the first (very large) download.
+# hf_token = "hf_xxx"
+
+# Give LiteLLM and Open WebUI public IPs, firewalled to these ranges.
+# expose_publicly       = true
+# allowed_source_ranges = ["203.0.113.0/24"]

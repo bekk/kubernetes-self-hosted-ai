@@ -2,12 +2,11 @@
 .antigravitycli
 
 # OpenTofu / Terraform
-infrastructure/gcp/.terraform/
-infrastructure/gcp/.terraform.lock.hcl
-infrastructure/gcp/terraform.tfvars
-infrastructure/gcp/*.tfstate
-infrastructure/gcp/*.tfstate.backup
+**/.terraform/
+**/terraform.tfvars
+**/*.tfstate
+**/*.tfstate.backup
+**/*.tfplan
 
-# Helm
-applications/charts/
-applications/Chart.lock
+# Benchmark output
+benchmark-*.json

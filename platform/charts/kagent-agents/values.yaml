@@ -1,0 +1,13 @@
+# Rendered by platform/kagent.tofu — these are only defaults.
+
+# ModelConfig the agent thinks with (kagent's default points at LiteLLM).
+modelConfig: default-model-config
+
+# kagent's built-in Kubernetes tool server.
+toolServer: kagent-tool-server
+
+# Namespace where the platform's models run.
+platformNamespace: ai-datacenter
+
+# Markdown table of the model catalogue, generated from models.yaml.
+modelCatalogue: ""

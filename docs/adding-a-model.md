@@ -1,175 +1,93 @@
 # Adding a Model
 
-Step-by-step guide for onboarding a new model to the AI Datacenter platform.
+Every model is one entry in [`models.yaml`](../models.yaml). Both OpenTofu stacks read that file, so you never have to keep a node pool and a Helm values file in sync by hand.
 
-> [!IMPORTANT]
-> The **Model Key** ties infrastructure to application config. The key you choose in `terraform.tfvars` (e.g. `llama-4-scout`) becomes the node label `ai.bekk.no/model: llama-4-scout`, and the Helm values must use the same key in `nodeSelector`. If these don't match, the vLLM pod won't schedule onto the GPU node.
+## 1. Size the hardware
 
-## 1. Choose the Model and Determine GPU Requirements
+Estimate the memory needed for the weights:
 
-Before adding anything, figure out how much GPU memory the model needs:
+| Precision | Memory per billion parameters |
+|---|---|
+| BF16 | ~2 GB |
+| FP8 | ~1 GB |
+| NVFP4 / INT4 | ~0.5 GB |
 
-1. **Check the model card** on HuggingFace for parameter count and recommended hardware.
-2. **Estimate VRAM** — rough rule of thumb:
+Then add 20–50% headroom for the KV cache, which grows with context length and concurrent requests. MoE models still need **all** their weights in GPU memory, not just the active ones.
 
-   | Precision | VRAM per Billion Parameters |
-   |-----------|----------------------------|
-   | FP16 / BF16 | ~2 GB/B |
-   | INT8 | ~1 GB/B |
-   | INT4 | ~0.5 GB/B |
+GPU machines in `europe-west4-b`:
 
-   For a 27B model at INT4: ~14 GB → fits on a single L4 (24 GB).
+| Machine | GPUs | GPU memory | Good for |
+|---|---|---|---|
+| `g4-standard-48` | 1× RTX PRO 6000 | 96 GB | ≤ 70B at FP8 |
+| `g4-standard-384` | 8× RTX PRO 6000 | 768 GB | Mid-size MoE (no NVLink, so slower tensor parallelism) |
+| `a3-highgpu-8g` | 8× H100 | 640 GB | ≤ ~500B at FP8 |
+| `a4-highgpu-8g` | 8× B200 | 1.44 TB | ≤ ~1.2T at FP8, frontier MoE |
 
-3. **Pick a GCP machine type** based on GPU count:
+## 2. Find the serving flags
 
-   | Machine Type | GPUs | GPU Memory | Use Case |
-   |--------------|------|------------|----------|
-   | `g2-standard-8` | 1× L4 | 24 GB | Models ≤ 20B (INT4) or ≤ 12B (FP16) |
-   | `g2-standard-24` | 2× L4 | 48 GB | Models ≤ 40B (INT4) or ≤ 24B (FP16) |
-   | `g2-standard-48` | 4× L4 | 96 GB | Models ≤ 80B (INT4) or ≤ 48B (FP16) |
-   | `a2-highgpu-1g` | 1× A100 | 40 GB | Latency-sensitive or large-context workloads |
+Check [recipes.vllm.ai](https://recipes.vllm.ai) for the model. Copy the tensor-parallel size, tool-call parser, reasoning parser and any model-specific flags. Check the minimum vLLM version against `vllm_image` in [`platform/variables.tofu`](../platform/variables.tofu).
 
-   Cross-reference with the [Verified Models table](../README.md#verified-models) for known-good configurations.
-
-4. **Check that you have GPU quota** in your target region:
-
-   ```bash
-   gcloud compute regions describe europe-west4 \
-     --format="table(quotas.metric,quotas.limit,quotas.usage)" \
-     | grep -i gpu
-   ```
-
-   If using Spot, you need `PREEMPTIBLE_NVIDIA_L4_GPUS` quota (separate from on-demand).
-
-## 2. Add Infrastructure
-
-Add an entry to the `models` map in `infrastructure/gcp/terraform.tfvars`:
-
-```hcl
-models = {
-  # Existing models
-  gemma-4 = {
-    machine_type = "g2-standard-8"
-    gpu_type     = "nvidia-l4"
-    gpu_count    = 1
-    spot         = true
-  }
-
-  # New model
-  llama-4-scout = {
-    machine_type = "g2-standard-24"
-    gpu_type     = "nvidia-l4"
-    gpu_count    = 2
-    spot         = true
-  }
-}
-```
-
-Apply the change:
-
-```bash
-cd infrastructure/gcp
-tofu plan    # Review — should show a new node pool being created
-tofu apply
-```
-
-This creates a new GKE node pool with:
-- The specified machine type and GPU configuration
-- The node label `ai.bekk.no/model: llama-4-scout`
-- A matching taint so only pods that tolerate it get scheduled there
-
-> [!NOTE]
-> Spot node pools can take a few minutes to scale up, and nodes may be preempted. For production-critical models, set `spot = false`.
-
-## 3. Add Application Config
-
-Add an entry to `modelSpec[]` in your Helm values file:
+## 3. Add the entry
 
 ```yaml
-modelSpec:
-  # Existing models
-  - name: "gemma-4"
+models:
+  my-model:                       # DNS-safe key → node pool, Service and label name
     enabled: true
-    modelURL: "google/gemma-4-27b-it"
-    requestGPU: 1
-    nodeSelector:
-      ai.bekk.no/model: "gemma-4"
-
-  # New model
-  - name: "llama-4-scout"
-    enabled: true
-    modelURL: "meta-llama/Llama-4-Scout-17B-16E-Instruct"
-    requestGPU: 2
-    nodeSelector:
-      ai.bekk.no/model: "llama-4-scout"
+    tier: medium                  # LiteLLM alias; must be unique across models
+    served_name: my-model         # name on /v1/models
+    hf_model: org/My-Model-FP8    # Hugging Face repo
+    node:
+      machine_type: a3-highgpu-8g
+      gpu_type: nvidia-h100-80gb
+      gpu_count: 8
+      spot: false
+      min_nodes: 0
+      max_nodes: 1
+      reservation: ""
+    serving:
+      replicas: 1
+      cpu: 32
+      memory: 256Gi
+      shm: 32Gi
+      cache_size: 800Gi           # ≥ 1.5× the checkpoint size
+      env: {}
+      args:
+        - --tensor-parallel-size=8
+        - --enable-auto-tool-choice
+        - --tool-call-parser=...
 ```
 
-Deploy:
+To replace the model behind an existing tier, give the new entry the same `tier` and set `enabled: false` on the old one. Clients using the alias won't notice the switch.
+
+## 4. Apply
 
 ```bash
-cd applications
-helm upgrade ai-datacenter . --namespace ai-datacenter
+make up
 ```
 
-Wait for the vLLM pod to start. Model download and loading can take several minutes depending on model size:
+The infrastructure stack creates the node pool. The platform stack creates the vLLM Deployment, its Service and its PVC, and adds the model to LiteLLM.
 
 ```bash
-kubectl get pods --namespace ai-datacenter -w
-kubectl logs -f deploy/vllm-llama-4-scout --namespace ai-datacenter
+make status
+make logs MODEL=my-model
 ```
 
-## 4. Verify
-
-**Check the vLLM router** lists the new model:
+## 5. Verify
 
 ```bash
-kubectl port-forward svc/vllm-router 8081:80 --namespace ai-datacenter
-curl http://localhost:8081/v1/models | jq '.data[].id'
-```
-
-You should see `llama-4-scout` in the output.
-
-**Test inference through LiteLLM:**
-
-```bash
-kubectl port-forward svc/litellm 4000:4000 --namespace ai-datacenter
-
+make port-forward
+curl -s http://localhost:4000/v1/models -H "Authorization: Bearer $LITELLM_KEY" | jq '.data[].id'
 curl http://localhost:4000/v1/chat/completions \
-  -H "Content-Type: application/json" \
-  -H "Authorization: Bearer sk-your-litellm-key" \
-  -d '{
-    "model": "llama-4-scout",
-    "messages": [{"role": "user", "content": "Hello, who are you?"}],
-    "max_tokens": 128
-  }'
+  -H "Authorization: Bearer $LITELLM_KEY" -H "Content-Type: application/json" \
+  -d '{"model": "my-model", "messages": [{"role": "user", "content": "Hello"}]}'
 ```
 
-**Test in Open WebUI** — open the UI, select the new model from the dropdown, and send a message.
+## Troubleshooting
 
-## 5. Update the Verified Models Table
-
-Once you've confirmed the model works, add it to the [Verified Models table](../README.md#verified-models) in `README.md`:
-
-```markdown
-| Llama 4 Scout | `meta-llama/Llama-4-Scout-17B-16E-Instruct` | `llama-4-scout` | `ai.bekk.no/model: llama-4-scout` | `g2-standard-24` | 2× NVIDIA L4 (48 GB) | ~X GB | Your notes here. |
-```
-
-## Label Convention Reference
-
-The label `ai.bekk.no/model` is the glue between infrastructure and application:
-
-```
-terraform.tfvars                        Helm values
-─────────────────                       ───────────
-models = {                              modelSpec:
-  llama-4-scout = {  ◄── Model Key ──►   - name: "llama-4-scout"
-    ...                                     nodeSelector:
-  }                                           ai.bekk.no/model: "llama-4-scout"
-}                                                     ▲
-        │                                             │
-        ▼                                             │
-  Node label:                                   Pod scheduling
-  ai.bekk.no/model: llama-4-scout ─────────────►  matches label
-```
-
-Both sides **must use the same key**. If they diverge, the pod stays in `Pending` because no node matches its `nodeSelector`.
+| Symptom | Likely cause |
+|---|---|
+| Pod `Pending`, event says `GCE out of resources` | No capacity in the zone. Use a reservation, or try Spot |
+| Pod `Pending`, `didn't match node selector` | The node pool hasn't been created. Run `make infra` |
+| `CrashLoopBackOff` with CUDA OOM | Too little GPU memory. Lower `--max-model-len` or `--max-num-seqs`, or use a bigger machine |
+| `Unknown tokenizer mode` / architecture not supported | vLLM image is too old for the model |
+| Very slow first start | Expected. Weights download once to the PVC; restarts read from disk |

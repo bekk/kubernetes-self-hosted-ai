@@ -1,35 +1,31 @@
 # ──────────────────────────────────────────────────────────────────────────────
 # Provider & OpenTofu version constraints
 # ──────────────────────────────────────────────────────────────────────────────
-# We use google-beta alongside google because some GKE features
-# (e.g. GPU driver auto-install) are only available in the beta API.
+# State is local by default so `make up` works from a fresh clone. For a team,
+# switch to the GCS backend below so everyone shares one state.
 # ──────────────────────────────────────────────────────────────────────────────
 
 terraform {
-  required_version = ">= 1.6"
+  required_version = ">= 1.8"
 
   required_providers {
     google = {
       source  = "hashicorp/google"
-      version = "~> 6.0"
+      version = "~> 7.0"
     }
-    google-beta = {
-      source  = "hashicorp/google-beta"
-      version = "~> 6.0"
+    random = {
+      source  = "hashicorp/random"
+      version = "~> 3.6"
     }
   }
-}
 
-# ──────────────────────────────────────────────────────────────────────────────
-# Provider configuration
-# ──────────────────────────────────────────────────────────────────────────────
+  # backend "gcs" {
+  #   bucket = "my-tofu-state-bucket"
+  #   prefix = "ai-datacenter/infrastructure"
+  # }
+}
 
 provider "google" {
-  project = var.project_id
-  region  = var.region
-}
-
-provider "google-beta" {
   project = var.project_id
   region  = var.region
 }

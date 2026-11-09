@@ -1,0 +1,37 @@
+# Rendered by platform/vllm.tofu from models.yaml — these are only defaults.
+
+# Model key from models.yaml. Used for resource names and the nodeSelector.
+key: ""
+# Hugging Face repository to serve.
+hfModel: ""
+# Model name exposed on /v1/models.
+servedName: ""
+
+image: vllm/vllm-openai:v0.32.0
+replicas: 1
+
+resources:
+  cpu: 8
+  memory: 32Gi
+
+accelerator:
+  type: gpu # gpu | tpu
+  count: 1
+  # TPUs only — must match the node's GKE labels, e.g. tpu-v6e-slice / 2x4
+  tpuType: ""
+  tpuTopology: ""
+
+# Size of /dev/shm. Tensor-parallel workers exchange data through it.
+shm: 16Gi
+
+# Persistent cache for the downloaded weights, so a restart or scale-from-zero
+# reloads from disk instead of re-downloading hundreds of GB.
+cache:
+  size: 200Gi
+  storageClass: vllm-weights
+
+# Optional secret holding a Hugging Face token under the key "token".
+hfTokenSecret: ""
+
+env: {}
+args: []

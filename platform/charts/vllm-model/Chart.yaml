@@ -1,0 +1,5 @@
+apiVersion: v2
+name: vllm-model
+description: One vLLM OpenAI-compatible server for one model, pinned to its GPU node pool.
+type: application
+version: 0.2.0

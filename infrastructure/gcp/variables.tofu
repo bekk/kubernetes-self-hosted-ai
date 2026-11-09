@@ -8,78 +8,86 @@ variable "project_id" {
 }
 
 variable "region" {
-  description = "GCP region (used for provider default and regional resources)."
+  description = "GCP region for the network, Cloud SQL and the cluster."
   type        = string
   default     = "europe-west4"
 }
 
 variable "zone" {
   description = <<-EOT
-    GCP zone for the GKE cluster. We use a zonal cluster (not regional) because
-    GPU availability is zone-specific and regional clusters would spread nodes
-    across zones where GPUs may not be available.
+    GCP zone for the GKE cluster. Zonal on purpose: GPU capacity is per zone.
+    europe-west4-b (Eemshaven, NL) is the only European zone offering B200,
+    GB200, H100 and RTX PRO 6000 together. europe-north1-c (Hamina, FI) is
+    closer to Oslo and has B200 + RTX PRO 6000, but far less capacity.
   EOT
   type        = string
-  default     = "europe-west4-a"
+  default     = "europe-west4-b"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────
-# Cluster identity
+# Cluster
 # ──────────────────────────────────────────────────────────────────────────────
 
 variable "cluster_name" {
-  description = "Name of the GKE cluster."
+  description = "Name of the GKE cluster (also used as a prefix for related resources)."
   type        = string
   default     = "ai-datacenter"
 }
 
-# ──────────────────────────────────────────────────────────────────────────────
-# System node pool
-# ──────────────────────────────────────────────────────────────────────────────
-# Runs kube-system workloads, ingress controllers, monitoring, etc.
-# No GPUs — just cheap, general-purpose VMs.
-# ──────────────────────────────────────────────────────────────────────────────
+variable "authorized_networks" {
+  description = "CIDR blocks allowed to reach the Kubernetes API. Empty = any (still requires Google auth)."
+  type        = list(string)
+  default     = []
+}
+
+variable "deletion_protection" {
+  description = "Protect the cluster and database from `tofu destroy`. Enable outside of demos."
+  type        = bool
+  default     = false
+}
 
 variable "system_pool" {
-  description = "Configuration for the system (non-GPU) node pool."
+  description = "The CPU-only pool that runs LiteLLM, Open WebUI and cluster add-ons."
   type = object({
-    machine_type   = optional(string, "e2-standard-4")
+    machine_type   = optional(string, "e2-standard-8")
     min_node_count = optional(number, 1)
     max_node_count = optional(number, 3)
-    disk_size_gb   = optional(number, 50)
+    disk_size_gb   = optional(number, 100)
   })
   default = {}
 }
 
+variable "gpu_boot_disk_size_gb" {
+  description = "Boot disk size for GPU nodes. Model weights live on PVCs, so this only holds images."
+  type        = number
+  default     = 200
+}
+
+variable "models_file" {
+  description = "Path to the shared model catalogue."
+  type        = string
+  default     = "../../models.yaml"
+}
+
 # ──────────────────────────────────────────────────────────────────────────────
-# AI model node pools
-# ──────────────────────────────────────────────────────────────────────────────
-# Each entry in this map creates a dedicated GPU node pool. The map key is the
-# model name (e.g. "gemma-4") and is used for labelling and naming.
-#
-# Key design decisions:
-#   - min_nodes defaults to 0 → scale-to-zero when no inference traffic
-#   - spot defaults to true    → up to 91% cheaper for interruptible workloads
-#   - enabled flag             → disable a model without removing its config
+# Database
 # ──────────────────────────────────────────────────────────────────────────────
 
-variable "models" {
-  description = "Map of AI models, each getting a dedicated GPU node pool."
+variable "database_tier" {
+  description = "Cloud SQL machine tier for the LiteLLM + Open WebUI database."
+  type        = string
+  default     = "db-custom-2-8192"
+}
+
+variable "upgrade_freezes" {
+  description = <<-EOT
+    Windows in which GKE must not upgrade nodes (max 32 days each), keyed by
+    name. Times are RFC 3339. Example:
+      upgrade_freezes = { demo = { start = "2026-11-13T00:00:00Z", end = "2026-11-21T00:00:00Z" } }
+  EOT
   type = map(object({
-    enabled      = optional(bool, true)
-    machine_type = string
-    gpu_type     = string
-    gpu_count    = optional(number, 1)
-    min_nodes    = optional(number, 0)
-    max_nodes    = optional(number, 2)
-    spot         = optional(bool, true)
-    disk_size_gb = optional(number, 200)
+    start = string
+    end   = string
   }))
-  default = {
-    gemma-4 = {
-      machine_type = "g2-standard-8" # 1×L4, 8 vCPU, 32 GiB
-      gpu_type     = "nvidia-l4"
-      gpu_count    = 1
-    }
-  }
+  default = {}
 }

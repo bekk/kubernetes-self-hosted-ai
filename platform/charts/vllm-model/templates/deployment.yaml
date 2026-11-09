@@ -1,0 +1,118 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "vllm-model.name" . }}
+  labels:
+    {{- include "vllm-model.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicas }}
+  # The weight cache is ReadWriteOnce and a GPU node fits one replica, so the
+  # old pod must be gone before the new one can start.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "vllm-model.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "vllm-model.labels" . | nindent 8 }}
+    spec:
+      nodeSelector:
+        ai.bekk.no/model: {{ .Values.key }}
+        {{- if eq .Values.accelerator.type "tpu" }}
+        cloud.google.com/gke-tpu-accelerator: {{ required "accelerator.tpuType is required for TPUs" .Values.accelerator.tpuType }}
+        cloud.google.com/gke-tpu-topology: {{ required "accelerator.tpuTopology is required for TPUs" .Values.accelerator.tpuTopology }}
+        {{- end }}
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+        - key: google.com/tpu
+          operator: Exists
+          effect: NoSchedule
+        - key: cloud.google.com/gke-spot
+          operator: Equal
+          value: "true"
+          effect: NoSchedule
+      terminationGracePeriodSeconds: 120
+      # Service links inject VLLM_<SERVICE>_PORT env vars, which vLLM reads as
+      # its own (unknown) settings. A Service named plain "vllm" would even
+      # override VLLM_PORT and break startup.
+      enableServiceLinks: false
+      containers:
+        - name: vllm
+          image: {{ .Values.image }}
+          command: ["vllm", "serve"]
+          args:
+            - {{ .Values.hfModel | quote }}
+            - --served-model-name={{ .Values.servedName }}
+            - --host=0.0.0.0
+            - --port=8000
+            {{- range .Values.args }}
+            - {{ . | quote }}
+            {{- end }}
+          env:
+            - name: HF_HOME
+              value: /models/hf
+            - name: HF_XET_HIGH_PERFORMANCE
+              value: "1"
+            {{- if .Values.hfTokenSecret }}
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.hfTokenSecret }}
+                  key: token
+            {{- end }}
+            {{- range $name, $value := .Values.env }}
+            - name: {{ $name }}
+              value: {{ $value | quote }}
+            {{- end }}
+          ports:
+            - name: http
+              containerPort: 8000
+          {{- $resource := ternary "google.com/tpu" "nvidia.com/gpu" (eq .Values.accelerator.type "tpu") }}
+          resources:
+            requests:
+              cpu: {{ .Values.resources.cpu | quote }}
+              memory: {{ .Values.resources.memory }}
+              {{ $resource }}: {{ .Values.accelerator.count }}
+            limits:
+              memory: {{ .Values.resources.memory }}
+              {{ $resource }}: {{ .Values.accelerator.count }}
+          # First start downloads and loads hundreds of GB; allow up to 2 hours
+          # before Kubernetes gives up on it.
+          startupProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            failureThreshold: 240
+          # Generous timeouts: a restart means a multi-minute model reload, so
+          # a slow /health under heavy load must never trigger one.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 30
+            timeoutSeconds: 10
+            failureThreshold: 10
+          volumeMounts:
+            - name: cache
+              mountPath: /models
+            - name: shm
+              mountPath: /dev/shm
+      volumes:
+        - name: cache
+          persistentVolumeClaim:
+            claimName: {{ include "vllm-model.name" . }}-cache
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: {{ .Values.shm }}
