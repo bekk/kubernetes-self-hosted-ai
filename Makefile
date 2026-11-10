@@ -4,7 +4,7 @@
 #   make up            Provision infrastructure, then deploy the platform
 #   make down          Tear everything down (platform first, then infrastructure)
 #   make status        Show GPU nodes and model pods
-#   make port-forward  LiteLLM on :4000, Open WebUI on :8080
+#   make port-forward  LiteLLM on :4000, Open WebUI on :8090, kagent on :8081
 #   make claude-env    Print the env vars that point Claude Code at LiteLLM
 #   make sleep / wake  Scale every model to 0 / back to 1 replica
 #   make benchmark     Throughput + cost per 1M tokens (needs make port-forward)
@@ -65,12 +65,14 @@ logs:
 
 port-forward:
 	@echo "LiteLLM:    http://localhost:4000   (UI at /ui)"
-	@echo "Open WebUI: http://localhost:8080"
+	@echo "Open WebUI: http://localhost:8090"
 	@echo "kagent UI:  http://localhost:8081   (if enable_kagent = true)"
+	@echo "(each forward reconnects automatically if the connection drops)"
 	trap 'kill 0' INT TERM EXIT; \
-	$(KUBECTL) -n $(NAMESPACE) port-forward svc/litellm 4000:4000 & \
-	$(KUBECTL) -n $(NAMESPACE) port-forward svc/open-webui 8080:80 & \
-	$(KUBECTL) -n kagent port-forward svc/kagent-ui 8081:8080 2>/dev/null & \
+	pf() { while true; do $(KUBECTL) -n $$1 port-forward svc/$$2 $$3 >/dev/null 2>&1; sleep 1; done; }; \
+	pf $(NAMESPACE) litellm 4000:4000 & \
+	pf $(NAMESPACE) open-webui 8090:80 & \
+	pf kagent kagent-ui 8081:8080 & \
 	wait
 
 claude-env:

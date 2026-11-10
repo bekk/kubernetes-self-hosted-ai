@@ -141,10 +141,10 @@ make logs MODEL=glm-5-3
 ## Using it
 
 ```bash
-make port-forward        # LiteLLM on :4000, Open WebUI on :8080
+make port-forward        # LiteLLM on :4000, Open WebUI on :8090, kagent on :8081
 ```
 
-- **Open WebUI:** open http://localhost:8080 and create the admin account (the first user becomes admin).
+- **Open WebUI:** open http://localhost:8090 and create the admin account (the first user becomes admin).
 - **LiteLLM admin UI:** http://localhost:4000/ui. Sign in with the master key: `tofu -chdir=platform output -raw litellm_master_key`. Create a virtual key per user or team there.
 
 ### OpenAI-compatible
