@@ -38,7 +38,26 @@ resource "kubernetes_namespace_v1" "kagent" {
   }
 }
 
-# kagent talks to LiteLLM with the same key as Open WebUI.
+# ──────────────────────────────────────────────────────────────────────────────
+# kagent's own LiteLLM key
+# ──────────────────────────────────────────────────────────────────────────────
+# A dedicated virtual key (alias "kagent") so agent traffic shows up separately
+# under usage and spend in LiteLLM. We choose the key value ourselves and
+# register it with a one-off Job, since LiteLLM keeps keys in its database
+# rather than in config.
+# ──────────────────────────────────────────────────────────────────────────────
+
+resource "random_password" "kagent_litellm_key" {
+  count = var.enable_kagent ? 1 : 0
+
+  length  = 40
+  special = false
+}
+
+locals {
+  kagent_litellm_key = var.enable_kagent ? "sk-kagent-${random_password.kagent_litellm_key[0].result}" : ""
+}
+
 resource "kubernetes_secret_v1" "kagent_llm" {
   count = var.enable_kagent ? 1 : 0
 
@@ -48,8 +67,90 @@ resource "kubernetes_secret_v1" "kagent_llm" {
   }
 
   data = {
-    OPENAI_API_KEY = kubernetes_secret_v1.litellm_master_key.data["master-key"]
+    OPENAI_API_KEY = local.kagent_litellm_key
   }
+}
+
+# A copy next to LiteLLM, for the registration Job (secrets don't cross namespaces).
+resource "kubernetes_secret_v1" "kagent_litellm_key" {
+  count = var.enable_kagent ? 1 : 0
+
+  metadata {
+    name      = "kagent-litellm-key"
+    namespace = kubernetes_namespace_v1.platform.metadata[0].name
+  }
+
+  data = {
+    key = local.kagent_litellm_key
+  }
+}
+
+resource "kubernetes_job_v1" "register_kagent_key" {
+  count = var.enable_kagent ? 1 : 0
+
+  metadata {
+    # New name per key, so a rotated key gets registered by a fresh Job.
+    name      = "register-kagent-key-${substr(sha256(local.kagent_litellm_key), 0, 8)}"
+    namespace = kubernetes_namespace_v1.platform.metadata[0].name
+  }
+
+  spec {
+    backoff_limit              = 6
+    ttl_seconds_after_finished = 3600
+
+    template {
+      metadata {}
+      spec {
+        restart_policy = "OnFailure"
+        node_selector  = { "ai.bekk.no/role" = "system" }
+
+        container {
+          name  = "register"
+          image = "curlimages/curl:8.11.1"
+
+          env {
+            name = "MASTER_KEY"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.litellm_master_key.metadata[0].name
+                key  = "master-key"
+              }
+            }
+          }
+          env {
+            name = "KAGENT_KEY"
+            value_from {
+              secret_key_ref {
+                name = kubernetes_secret_v1.kagent_litellm_key[0].metadata[0].name
+                key  = "key"
+              }
+            }
+          }
+
+          # Idempotent: an existing key counts as success.
+          command = ["/bin/sh", "-c", <<-EOT
+            set -u
+            code=$(curl -s -o /tmp/out -w '%%{http_code}' -X POST \
+              http://litellm.${var.namespace}.svc.cluster.local:4000/key/generate \
+              -H "Authorization: Bearer $MASTER_KEY" -H 'Content-Type: application/json' \
+              -d "{\"key\": \"$KAGENT_KEY\", \"key_alias\": \"kagent\", \"metadata\": {\"client\": \"kagent\"}}")
+            echo "HTTP $code"; cat /tmp/out; echo
+            [ "$code" = "200" ] && exit 0
+            grep -qiE 'already exists|unique constraint|duplicate' /tmp/out && exit 0
+            exit 1
+          EOT
+          ]
+        }
+      }
+    }
+  }
+
+  wait_for_completion = true
+  timeouts {
+    create = "5m"
+  }
+
+  depends_on = [helm_release.litellm]
 }
 
 resource "helm_release" "kagent_crds" {
