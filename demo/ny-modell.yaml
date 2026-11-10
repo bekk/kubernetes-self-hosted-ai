@@ -31,6 +31,9 @@ spec:
     spec:
       nodeSelector:
         ai.bekk.no/model: ny-modell
+        # GKE avviser TPU-poder uten type og topologi, så de må være med.
+        cloud.google.com/gke-tpu-accelerator: tpu-v6e-slice
+        cloud.google.com/gke-tpu-topology: 2x2
       containers:
         - name: vllm
           image: registry.k8s.io/pause:3.10

@@ -2,4 +2,4 @@ apiVersion: v2
 name: kagent-agents
 description: Our own kagent Agents, with system prompts rendered from models.yaml.
 type: application
-version: 0.1.0
+version: 0.1.1
