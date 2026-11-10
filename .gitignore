@@ -10,3 +10,4 @@
 
 # Benchmark output
 benchmark-*.json
+agent-benchmark-*.json

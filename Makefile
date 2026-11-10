@@ -8,6 +8,7 @@
 #   make claude-env    Print the env vars that point Claude Code at LiteLLM
 #   make sleep / wake  Scale every model to 0 / back to 1 replica
 #   make benchmark     Throughput + cost per 1M tokens (needs make port-forward)
+#   make agent-benchmark  Many developers running coding agents at once
 #   make demo-break    Deploy a model that bypasses the platform (stays Pending)
 #   make demo-fix      Remove it again
 # ══════════════════════════════════════════════════════════════════════════════
@@ -25,7 +26,7 @@ PROJECT_ID   = $(word 2,$(subst _, ,$(KUBE_CONTEXT)))
 KUBECTL      = kubectl --context=$(or $(KUBE_CONTEXT),$(error No cluster in infrastructure state - run 'make infra' first))
 
 .NOTPARALLEL:
-.PHONY: up down infra platform plan credentials status logs port-forward claude-env sleep wake benchmark demo-break demo-fix
+.PHONY: up down infra platform plan credentials status logs port-forward claude-env sleep wake benchmark agent-benchmark demo-break demo-fix
 
 up: infra credentials platform
 
@@ -97,6 +98,14 @@ BENCH_ARGS ?= --models small,medium --concurrency 1,4,8,16 \
 
 benchmark:
 	python3 scripts/benchmark.py $(BENCH_ARGS) --json benchmark-$$(date +%Y%m%d-%H%M).json
+
+# Simulated developers running coding agents against the medium tier. API
+# prices are input/output/cache-read per 1M tokens (Anthropic, Oct 2026).
+AGENT_BENCH_ARGS ?= --model medium --developers 4,8,16,32 --duration 120 --price 23 \
+	--api "Sonnet 5.5=2/10/0.2" --api "Opus 5.5=4/20/0.2"
+
+agent-benchmark:
+	python3 scripts/agent_benchmark.py $(AGENT_BENCH_ARGS) --json agent-benchmark-$$(date +%Y%m%d-%H%M).json
 
 # kagent demo: a workload that bypasses models.yaml and never schedules.
 # Costs nothing: no node pool matches, and the image is a pause container.
