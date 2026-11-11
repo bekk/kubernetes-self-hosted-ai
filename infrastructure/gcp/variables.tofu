@@ -10,18 +10,18 @@ variable "project_id" {
 variable "region" {
   description = "GCP region for the network, Cloud SQL and the cluster."
   type        = string
-  default     = "europe-west4"
+  default     = "us-east5"
 }
 
 variable "zone" {
   description = <<-EOT
-    GCP zone for the GKE cluster. Zonal on purpose: GPU capacity is per zone.
-    europe-west4-b (Eemshaven, NL) is the only European zone offering B200,
-    GB200, H100 and RTX PRO 6000 together. europe-north1-c (Hamina, FI) is
-    closer to Oslo and has B200 + RTX PRO 6000, but far less capacity.
+    GCP zone for the GKE cluster. Zonal on purpose: accelerator capacity is per
+    zone. The default, us-east5-a, offers TPU v6e (the enabled models in
+    models.yaml). For the GPU models, europe-west4-b (Netherlands) is the only
+    European zone with B200, GB200, H100 and RTX PRO 6000 together.
   EOT
   type        = string
-  default     = "europe-west4-b"
+  default     = "us-east5-a"
 }
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -3,29 +3,128 @@
 # ══════════════════════════════════════════════════════════════════════════════
 # Both OpenTofu stacks read this file:
 #
-#   infrastructure/gcp  →  one GPU node pool per model   (the `node` block)
-#   platform            →  one vLLM Deployment per model (the `serving` block)
+#   infrastructure/gcp  →  one accelerator node pool per model (the `node` block)
+#   platform            →  one vLLM Deployment per model       (the `serving` block)
 #                          + a LiteLLM route per model and per tier alias
 #
-# The map key (e.g. `glm-5-3`) becomes the node label `ai.bekk.no/model`, the
-# node pool name, and the Kubernetes Service name. Keep it DNS-safe: lowercase
-# letters, digits and hyphens.
+# The map key (e.g. `gemma-4-31b-tpu`) becomes the node label `ai.bekk.no/model`,
+# the node pool name, and the Kubernetes Service name. Keep it DNS-safe:
+# lowercase letters, digits and hyphens.
 #
-# `tier` is the stable alias clients use (large / medium / small). Swapping the
-# model behind a tier is a change to this file only — no client reconfiguration.
-# `gateway.drop_params` lists request params LiteLLM strips before forwarding.
-# `aliases` adds extra LiteLLM names, e.g. to let `medium` also answer `large`
-# while the large tier is switched off.
+# Fields worth knowing:
+#   tier                 Stable alias clients use (small / medium / large).
+#                        Swapping the model behind a tier is a change to this
+#                        file only; clients don't notice.
+#   aliases              Extra LiteLLM names, e.g. let `medium` also answer
+#                        `large` while no large model is enabled.
+#   gateway.drop_params  Request params LiteLLM strips before forwarding.
+#   node.accelerator     `gpu` (default) or `tpu`.
+#   node.zone            Optional; defaults to the cluster's zone. Must be in
+#                        the cluster's region.
+#   node.reservation     Name of a GCE reservation the pool must consume.
+#   node.flex_start      Queue for capacity with Dynamic Workload Scheduler.
+#                        (Set either `reservation` or `flex_start`, not both.)
 #
-# Recipes: https://recipes.vllm.ai  (flags below follow the published recipes
-# for each model, as of November 2026)
+# Serving flags follow the published recipes at https://recipes.vllm.ai and
+# the vLLM TPU support matrix, as of November 2026.
 # ══════════════════════════════════════════════════════════════════════════════
 
 models:
+  # ────────────────────────────────────────────────────────────────────────────
+  # Enabled by default: TPU v6e (Trillium)
+  # ────────────────────────────────────────────────────────────────────────────
+  # Large GPU machines (8× B200 / 8× RTX PRO 6000) were hard to get at short
+  # notice, while TPU v6e quota and calendar reservations were not. Both
+  # models below are tested end to end: chat, tool calling, the Anthropic
+  # Messages API, Claude Code, GitHub Copilot CLI and kagent.
+
+  # ── Medium tier, also answers `large` ───────────────────────────────────────
+  # Google Gemma 4 31B-it (dense, Apache 2.0, not gated) on 8× TPU v6e
+  # (32 GB HBM each = 256 GB). Fully passing in vLLM's TPU support matrix.
+  # Measured: ~1 260 output tokens/s at 64 concurrent requests.
+  gemma-4-31b-tpu:
+    enabled: true
+    tier: medium
+    aliases: [large] # Remove when a large-tier model is enabled
+    served_name: gemma-4-31b
+    hf_model: google/gemma-4-31B-it
+    node:
+      accelerator: tpu
+      machine_type: ct6e-standard-8t # 1 host, 8× TPU v6e
+      tpu_type: tpu-v6e-slice
+      tpu_topology: 2x4
+      tpu_chips: 8
+      spot: false
+      min_nodes: 0
+      max_nodes: 1
+      reservation: "" # e.g. a TPU calendar reservation (6 h lead time, 24 h minimum)
+      flex_start: false
+    serving:
+      replicas: 1
+      cpu: 32
+      memory: 256Gi
+      shm: 32Gi
+      cache_size: 200Gi # BF16 weights are ~62 GB; the XLA compile cache lives here too
+      env:
+        # Persist compiled XLA graphs next to the weights: reloads skip most
+        # of the (long) TPU compilation step.
+        VLLM_XLA_CACHE_PATH: /models/xla-cache
+      args:
+        - --tensor-parallel-size=8
+        - --max-model-len=65536
+        - --enable-auto-tool-choice
+        - --tool-call-parser=gemma4
+        - --reasoning-parser=gemma4
+
+  # ── Small tier (≈ Haiku) ────────────────────────────────────────────────────
+  # Qwen3-30B-A3B-Instruct-2507: MoE, 3B active, Apache 2.0, 262K native
+  # context, non-thinking. Same architecture as the fully passing
+  # Qwen/Qwen3-30B-A3B in vLLM's TPU matrix. ~61 GB BF16 on 4× v6e (128 GB).
+  qwen3-30b-a3b-tpu:
+    enabled: true
+    tier: small
+    served_name: qwen3-30b-a3b
+    hf_model: Qwen/Qwen3-30B-A3B-Instruct-2507
+    gateway:
+      # Non-thinking model, but Claude Code still sends reasoning_effort.
+      drop_params: [reasoning_effort]
+    node:
+      accelerator: tpu
+      machine_type: ct6e-standard-4t # 1 host, 4× TPU v6e
+      tpu_type: tpu-v6e-slice
+      tpu_topology: 2x2
+      tpu_chips: 4
+      spot: false
+      min_nodes: 0
+      max_nodes: 1
+      reservation: ""
+      flex_start: false
+    serving:
+      replicas: 1
+      cpu: 16
+      memory: 128Gi
+      shm: 16Gi
+      cache_size: 200Gi
+      env:
+        VLLM_XLA_CACHE_PATH: /models/xla-cache
+      args:
+        - --tensor-parallel-size=4
+        - --max-model-len=65536
+        - --enable-auto-tool-choice
+        - --tool-call-parser=hermes
+
+  # ────────────────────────────────────────────────────────────────────────────
+  # Disabled: GPU alternatives
+  # ────────────────────────────────────────────────────────────────────────────
+  # Stronger open models on NVIDIA Blackwell. To use one, set `enabled: true`
+  # and disable the TPU model with the same tier (tiers must be unique). Pick a
+  # zone that has the machine type (e.g. europe-west4-b for B200 and RTX PRO
+  # 6000) and make sure you have quota, plus a reservation or flex-start: 8-GPU
+  # machines are rarely available on demand at short notice.
+
   # ── Large tier (≈ Opus) ─────────────────────────────────────────────────────
-  # Z.ai GLM-5.3 — 753B MoE (~40B active), native FP8 checkpoint, 1M context.
-  # Strongest open-weight model for long-horizon agentic coding as of Nov 2026.
-  # Disabled for the first demo to halve GPU cost — `medium` answers `large`.
+  # Z.ai GLM-5.3: 753B MoE (~40B active), native FP8 checkpoint, 1M context.
+  # Among the strongest open-weight models for agentic coding (Nov 2026).
   glm-5-3:
     enabled: false
     tier: large
@@ -38,8 +137,8 @@ models:
       spot: false # Spot preemption would kill a 10+ minute model load mid-demo
       min_nodes: 0
       max_nodes: 1
-      reservation: "" # Name of a specific GCE reservation, if you have one
-      flex_start: false # Use Dynamic Workload Scheduler instead (no reservation needed)
+      reservation: ""
+      flex_start: true
     serving:
       replicas: 1
       cpu: 64
@@ -60,15 +159,11 @@ models:
         - --tool-call-parser=glm47
         - --reasoning-parser=glm47
 
-  # ── Medium tier (≈ Sonnet) ──────────────────────────────────────────────────
-  # Z.ai GLM-5.3-Flash — 320B MoE (18B active), MIT licence, FP8, 1M context.
-  # Same family and tool-call format as the large tier, much faster per token.
-  # Switched off 2026-11-08: europe-west4-b returned "GCE out of resources"
-  # for a4-highgpu-8g. Re-enable (and disable the -g4 variant) to retry B200.
+  # ── Medium tier (≈ Sonnet) on 8× B200 ───────────────────────────────────────
+  # Z.ai GLM-5.3-Flash: 320B MoE (18B active), MIT licence, FP8, 1M context.
   glm-5-3-flash:
     enabled: false
     tier: medium
-    aliases: [large] # Remove when glm-5-3 is enabled again
     served_name: glm-5.3-flash
     hf_model: zai-org/GLM-5.3-Flash
     node:
@@ -79,9 +174,9 @@ models:
       min_nodes: 0
       max_nodes: 1
       reservation: ""
-      flex_start: true # No reservation possible at short notice; queue for capacity
+      flex_start: true
     serving:
-      replicas: 0 # Asleep by default — `make wake MODEL=glm-5-3-flash` (~$70/h)
+      replicas: 1
       cpu: 64
       memory: 512Gi
       shm: 64Gi
@@ -99,16 +194,13 @@ models:
         - --tool-call-parser=glm47
         - --reasoning-parser=glm47
 
-  # ── Medium tier, fallback hardware ──────────────────────────────────────────
-  # Same model on 8× RTX PRO 6000 (768 GB) instead of B200. Much easier to get,
-  # about half the price per hour, but slower: no NVLink, so tensor-parallel
-  # traffic goes over PCIe. Not a published vLLM recipe — test before relying
-  # on it. To switch: set `enabled: true` here and `enabled: false` above.
-  # Switched off 2026-11-08: g4-standard-384 also hit "GCE out of resources".
+  # ── Medium tier on 8× RTX PRO 6000 ──────────────────────────────────────────
+  # Same model on 768 GB of GDDR7 instead of B200: easier to get and about half
+  # the price per hour, but slower (no NVLink, so tensor-parallel traffic goes
+  # over PCIe). Not a published vLLM recipe; test before relying on it.
   glm-5-3-flash-g4:
     enabled: false
     tier: medium
-    aliases: [large]
     served_name: glm-5.3-flash
     hf_model: zai-org/GLM-5.3-Flash
     node:
@@ -119,7 +211,7 @@ models:
       min_nodes: 0
       max_nodes: 1
       reservation: ""
-      flex_start: true # Project has Spot/flex quota only
+      flex_start: true
     serving:
       replicas: 1
       cpu: 64
@@ -137,10 +229,10 @@ models:
         - --tool-call-parser=glm47
         - --reasoning-parser=glm47
 
-  # ── Small tier (≈ Haiku) ────────────────────────────────────────────────────
-  # Qwen3.8-27B — dense 27B, Apache 2.0, FP8, 262K context, vision-capable.
-  # Fits comfortably on a single 96 GB Blackwell GPU.
-  # Switched off 2026-11-08: replaced by the TPU small tier below.
+  # ── Small tier (≈ Haiku) on 1× RTX PRO 6000 ─────────────────────────────────
+  # Qwen3.8-27B: dense 27B, Apache 2.0, FP8, 262K context, vision-capable.
+  # Tested end to end on GPU, including Claude Code: ~44 tokens/s for a single
+  # request, ~300 tokens/s at 8 concurrent.
   qwen3-8-27b:
     enabled: false
     tier: small
@@ -158,9 +250,9 @@ models:
       min_nodes: 0
       max_nodes: 2
       reservation: ""
-      flex_start: true # Project has Spot/flex quota only; on-demand RTX PRO 6000 quota is 0
+      flex_start: true
     serving:
-      replicas: 0 # Asleep during the TPU test — set back to 1 to wake
+      replicas: 1
       cpu: 16
       memory: 64Gi
       shm: 16Gi
@@ -174,81 +266,3 @@ models:
         - --enable-auto-tool-choice
         - --tool-call-parser=qwen3_coder
         - --reasoning-parser=qwen3
-
-  # ── Medium tier on TPU (≈ Sonnet-lite) ──────────────────────────────────────
-  # Google Gemma 4 31B-it (dense, Apache 2.0, not gated) on 8× TPU v6e
-  # (Trillium, 32 GB HBM each = 256 GB). Fully passing in vLLM's TPU support
-  # matrix (unit, correctness, performance). GPUs were unobtainable on short
-  # notice; TPU v6e on-demand quota was granted in us-east5 within minutes.
-  gemma-4-31b-tpu:
-    enabled: true
-    tier: medium
-    aliases: [large] # Until a large-tier model is enabled
-    served_name: gemma-4-31b
-    hf_model: google/gemma-4-31B-it
-    node:
-      accelerator: tpu
-      machine_type: ct6e-standard-8t # 1 host, 8× TPU v6e
-      tpu_type: tpu-v6e-slice
-      tpu_topology: 2x4
-      tpu_chips: 8
-      zone: us-east5-a
-      spot: false
-      min_nodes: 0
-      max_nodes: 1
-      reservation: "ai-demo-medium-v6e8" # Calendar reservation, Tue 09:00 → Wed 09:00 Oslo
-      flex_start: false
-    serving:
-      replicas: 1
-      cpu: 32
-      memory: 256Gi
-      shm: 32Gi
-      cache_size: 200Gi # BF16 weights are ~62 GB; XLA compile cache lives here too
-      env:
-        # Persist compiled XLA graphs next to the weights: reloads skip most
-        # of the (long) TPU compilation step.
-        VLLM_XLA_CACHE_PATH: /models/xla-cache
-      args:
-        - --tensor-parallel-size=8
-        - --max-model-len=65536
-        - --enable-auto-tool-choice
-        - --tool-call-parser=gemma4
-        - --reasoning-parser=gemma4
-
-  # ── Small tier on TPU (≈ Haiku) ─────────────────────────────────────────────
-  # Qwen3-30B-A3B-Instruct-2507 — MoE, 3B active, Apache 2.0, 262K native
-  # context, non-thinking. Same architecture as the fully-passing
-  # Qwen/Qwen3-30B-A3B in vLLM's TPU matrix. ~61 GB BF16 on 4× v6e (128 GB).
-  qwen3-30b-a3b-tpu:
-    enabled: true
-    tier: small
-    served_name: qwen3-30b-a3b
-    hf_model: Qwen/Qwen3-30B-A3B-Instruct-2507
-    gateway:
-      # Non-thinking model; Claude Code still sends reasoning_effort.
-      drop_params: [reasoning_effort]
-    node:
-      accelerator: tpu
-      machine_type: ct6e-standard-4t # 1 host, 4× TPU v6e
-      tpu_type: tpu-v6e-slice
-      tpu_topology: 2x2
-      tpu_chips: 4
-      zone: us-east5-a
-      spot: false
-      min_nodes: 0
-      max_nodes: 1
-      reservation: "ai-demo-small-v6e4" # Calendar reservation, Tue 09:00 → Wed 09:00 Oslo
-      flex_start: false
-    serving:
-      replicas: 1
-      cpu: 16
-      memory: 128Gi
-      shm: 16Gi
-      cache_size: 200Gi
-      env:
-        VLLM_XLA_CACHE_PATH: /models/xla-cache
-      args:
-        - --tensor-parallel-size=4
-        - --max-model-len=65536
-        - --enable-auto-tool-choice
-        - --tool-call-parser=hermes

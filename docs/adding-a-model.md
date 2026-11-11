@@ -14,10 +14,12 @@ Estimate the memory needed for the weights:
 
 Then add 20–50% headroom for the KV cache, which grows with context length and concurrent requests. MoE models still need **all** their weights in GPU memory, not just the active ones.
 
-GPU machines in `europe-west4-b`:
+Accelerator machines (GPUs in `europe-west4-b`, TPU v6e in `us-east5-a` among others):
 
-| Machine | GPUs | GPU memory | Good for |
+| Machine | Accelerators | Memory | Good for |
 |---|---|---|---|
+| `ct6e-standard-4t` | 4× TPU v6e | 128 GB | ≤ ~50B at BF16 |
+| `ct6e-standard-8t` | 8× TPU v6e | 256 GB | ≤ ~100B at BF16 |
 | `g4-standard-48` | 1× RTX PRO 6000 | 96 GB | ≤ 70B at FP8 |
 | `g4-standard-384` | 8× RTX PRO 6000 | 768 GB | Mid-size MoE (no NVLink, so slower tensor parallelism) |
 | `a3-highgpu-8g` | 8× H100 | 640 GB | ≤ ~500B at FP8 |
@@ -56,6 +58,19 @@ models:
         - --enable-auto-tool-choice
         - --tool-call-parser=...
 ```
+
+For a **TPU** model, replace the GPU fields in `node` with:
+
+```yaml
+    node:
+      accelerator: tpu
+      machine_type: ct6e-standard-8t
+      tpu_type: tpu-v6e-slice      # GKE's cloud.google.com/gke-tpu-accelerator value
+      tpu_topology: 2x4            # 2x2 for 4 chips, 2x4 for 8
+      tpu_chips: 8
+```
+
+TPUs use the `vllm/vllm-tpu` image automatically. Check that the model is in [vLLM's TPU support matrix](https://github.com/vllm-project/tpu-inference) first; far fewer models are supported on TPU than on GPU.
 
 To replace the model behind an existing tier, give the new entry the same `tier` and set `enabled: false` on the old one. Clients using the alias won't notice the switch.
 

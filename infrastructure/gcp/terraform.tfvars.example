@@ -7,8 +7,8 @@
 # ──────────────────────────────────────────────────────────────────────────────
 
 project_id   = "my-gcp-project-id" # ← replace with your GCP project ID
-region       = "europe-west4"
-zone         = "europe-west4-b"
+region       = "us-east5"   # TPU v6e; see variables.tofu for GPU zones
+zone         = "us-east5-a"
 cluster_name = "ai-datacenter"
 
 # Lock the Kubernetes API down to your office / VPN egress IPs.
